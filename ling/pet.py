@@ -23,8 +23,10 @@ from .settings_ui import SettingsWindow
 from .tray import Tray
 
 BG_KEY = '#FF00FF'
-LINK_COLOR = '#1B6BD6'      # 可点击的文件路径
-LINK_HOVER = '#0B4EA2'
+LINK_COLOR = '#6A2FC4'      # 可点击的文件路径（主色系，不用下划线）
+LINK_HOVER = '#4A1E8F'
+LINK_BG = '#F1EAFB'
+LINK_BG_HOVER = '#E4D6F8'
 
 # 子窗口摆位（物理像素）：贴在灵灵左侧、底边略高于她的脚
 CHAT_SIZE = (414, 710)      # 聊天窗尺寸
@@ -193,6 +195,8 @@ class Pet(object):
         self._ui_queue = queue.Queue()
         self._child_offsets = []
         self._attached = []          # 拖进来/选进来的文件
+        self._file_options = []      # 当前的编号选项
+        self._pending_act = None     # 等待确认的动作
         self._watch_proc = None      # filee watch 的进程
         self._filee = fileops.find_cli()
         self._dnd = None
@@ -911,20 +915,39 @@ class Pet(object):
         except Exception:
             pass
         links = []
-        for p in files[:10]:
-            name = os.path.basename(p.rstrip('\\/')) or p
-            icon = '▸' if os.path.isdir(p) else '·'
-            links.append(('%s %s%s' % (icon, name, '（文件夹）' if os.path.isdir(p) else ''), p))
+        for f in files[:10]:
+            name = os.path.basename(f.rstrip('\\/')) or f
+            icon = '▸' if os.path.isdir(f) else '·'
+            links.append(('%s %s%s' % (icon, name, '（文件夹）' if os.path.isdir(f) else ''), f))
         if len(files) > 10:
             links.append(('…还有 %d 个' % (len(files) - 10), os.path.dirname(files[0])))
-        if self._filee:
-            tip = ('想让我怎么处理？\n'
-                   '「转成 webp」「用 to-pdf 预设」\n「质量 80」「盯着这个文件夹」')
-        else:
-            tip = '（还没检测到 Filee，装上之后才能帮你转文件）'
-        self._chat_add('灵灵', '收到 %d个文件，点名字就能打开位置：' % len(files), links=links)
-        self._chat_add('灵灵', tip)
+
+        options = self._build_file_options(files)
+        self._file_options = options
+        if not self._filee:
+            text = '收到 %d个文件（还没装 Filee，暂时只能陪你聊天）' % len(files)
+            self._chat_add('灵灵', text, links=links)
+            self.say('收到文件啦～', 3000)
+            return
+        rows = ['收到 %d个文件，你要哪样？' % len(files)]
+        for i, (label, _act) in enumerate(options, 1):
+            rows.append('%d. %s' % (i, label))
+        rows.append('回数字就行，也可以直接说别的。')
+        self._chat_add('灵灵', '\n'.join(rows), links=links)
         self.say('收到文件啦～', 3000)
+
+    def _build_file_options(self, files):
+        """按拖进来的东西给出可执行的选项。"""
+        opts = [
+            ('转成 webp', {'action': 'convert', 'to': 'webp', 'preset': '', 'quality': None}),
+            ('用 to-pdf 预设', {'action': 'convert', 'to': '', 'preset': 'to-pdf', 'quality': None}),
+            ('转成 jpg（质量 80）', {'action': 'convert', 'to': 'jpg', 'preset': '', 'quality': 80}),
+        ]
+        folder = next((f for f in files if os.path.isdir(f)), '')
+        if folder:
+            opts.append(('盯着这个文件夹，新文件转成 jpg',
+                         {'action': 'watch', 'to': 'jpg', 'preset': '', 'folder': folder}))
+        return opts
 
     def pick_files(self):
         if not self._filee:
@@ -935,31 +958,74 @@ class Pet(object):
         if files:
             self._on_files_dropped(list(files))
 
+    UNSUPPORTED_HINTS = ('拆', '合并', '重命名', '改名', '整理', '归类', '归档', '压缩', '解压',
+                         '加密', '解密', '翻译', '对比', '去重', '排序', '删除', '移动',
+                         '复制', '查找', '搜索', '识别', 'ocr')
+
     def _handle_file_request(self, text):
         if not self._attached or not self._filee:
             return False
+
+        # 1) 回了数字 → 直接执行对应选项
+        picked = (text or '').strip()
+        if self._file_options and picked.isdigit():
+            idx = int(picked) - 1
+            if 0 <= idx < len(self._file_options):
+                label, act = self._file_options[idx]
+                self._chat_add('灵灵', '好，那我来：%s' % label)
+                self._execute(act)
+                return True
+            self._chat_add('灵灵', '只有 1 到 %d 这几个选项哦。' % len(self._file_options))
+            return True
+
         try:
             fmts = fileops.format_names()
             preset_list = fileops.presets()
         except Exception:
             fmts, preset_list = [], []
         act = intent.parse(text, formats=fmts, presets=preset_list, attached=self._attached)
-        if not act:
-            return False
+
+        if act:
+            kind = act.get('action')
+            if kind in ('convert', 'watch'):
+                # 2) 自己说别的 → 先把要做什么说清楚，再执行
+                self._chat_add('灵灵', '收到，我这样做：%s' % self._describe(act))
+                self._execute(act)
+            elif kind == 'watch_need_format':
+                self._chat_add('灵灵', '要转成什么格式？比如「盯着这个文件夹转成 webp」')
+            elif kind == 'stop_watch':
+                self._stop_watch()
+            elif kind == 'list_formats':
+                self._list_formats()
+            else:
+                return False
+            return True
+
+        # 3) 听起来是文件任务，但她不会 → 直接说清楚
+        low = (text or '').lower()
+        if any(hint in low for hint in self.UNSUPPORTED_HINTS):
+            self._chat_add('灵灵',
+                           '这个我还不会。我目前只会：换格式（270 种）、用预设、调图片质量、'
+                           '盯着文件夹自动转。你说的「%s」得等以后。' % (text or '')[:20])
+            return True
+        return False
+
+    def _describe(self, act):
+        kind = act.get('action')
+        target = act.get('to') or act.get('preset') or ''
+        if act.get('quality'):
+            target += '，质量 %d' % act['quality']
+        if kind == 'watch':
+            folder = act.get('folder') or ''
+            return '盯着「%s」，新文件都转成 %s' % (os.path.basename(folder.rstrip('\\/')) or folder, target)
+        return '把 %d个文件转成 %s（放在原目录）' % (len(self._attached), target)
+
+    def _execute(self, act):
         kind = act.get('action')
         if kind == 'convert':
             self._run_convert(act)
         elif kind == 'watch':
             self._run_watch(act)
-        elif kind == 'watch_need_format':
-            self._chat_add('灵灵', '要转成什么格式？比如「盯着这个文件夹转成 webp」')
-        elif kind == 'stop_watch':
-            self._stop_watch()
-        elif kind == 'list_formats':
-            self._list_formats()
-        else:
-            return False
-        return True
 
     def _run_convert(self, act):
         files = list(self._attached)
@@ -1207,14 +1273,14 @@ class Pet(object):
                                padx=10, pady=8)
                 lab.pack(anchor='w', pady=(2, 0))
             for shown, path in (links or []):
-                link = tk.Label(row, text=shown, bg='#F7F5FB', fg=LINK_COLOR,
-                                justify='left', wraplength=330, cursor='hand2',
-                                font=('Microsoft YaHei', 10, 'underline'),
-                                padx=10, pady=5)
-                link.pack(anchor='w', pady=(2, 0))
+                link = tk.Label(row, text='  ' + shown + '  ', bg=LINK_BG, fg=LINK_COLOR,
+                                justify='left', wraplength=320, cursor='hand2',
+                                font=('Microsoft YaHei', 10),
+                                padx=6, pady=4)
+                link.pack(anchor='w', pady=(3, 0))
                 link.bind('<Button-1>', lambda e, p=path: self._open_location(p))
-                link.bind('<Enter>', lambda e, w=link: w.config(fg=LINK_HOVER))
-                link.bind('<Leave>', lambda e, w=link: w.config(fg=LINK_COLOR))
+                link.bind('<Enter>', lambda e, w=link: w.config(bg=LINK_BG_HOVER))
+                link.bind('<Leave>', lambda e, w=link: w.config(bg=LINK_BG))
             self._chat_scroll_bottom()
             return lab if lab is not None else row
         except Exception:
@@ -1351,7 +1417,9 @@ class Pet(object):
             msgs.append({'role': 'system',
                          'content': '用户刚拖进来这些文件：%s。'
                                     '如果他说的是转换格式，交给本地技能处理；'
-                                    '否则当普通聊天回答，别编造文件内容。' % names})
+                                    '否则当普通聊天回答，别编造文件内容；'
+                                    '也不要承诺你做不到的文件操作（拆分、合并、重命名、整理、'
+                                    'OCR、翻译等），直接说你只会转换格式。' % names})
         for m in self._chat_msgs[-10:]:
             msgs.append({'role': m['role'], 'content': m['content']})
         return msgs
