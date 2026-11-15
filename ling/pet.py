@@ -892,8 +892,12 @@ class Pet(object):
 
     # ---------------- 文件技能（拖文件 + 聊天指令） ----------------
     def _enable_dnd(self):
+        def deliver(paths):
+            # 窗口过程里绝不能碰 Tk；丢进队列，让主线程的泵去处理
+            self._ui_queue.put(lambda p=list(paths): self._on_files_dropped(p))
+
         try:
-            self._dnd = dnd.enable(self.root, self._on_files_dropped)
+            self._dnd = dnd.enable(self.root, deliver)
         except Exception:
             self._dnd = None
 

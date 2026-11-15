@@ -74,10 +74,10 @@ class _DropHandler(object):
                 paths = self._read(wparam)
                 shell32.DragFinish(wparam)
                 if paths:
-                    self.root.after(0, lambda p=list(paths): self.callback(p))
-                return 0
+                    self.callback(paths)
             except Exception:
                 pass
+            return 0
         return user32.CallWindowProcW(self.old_proc, hwnd, msg, wparam, lparam)
 
     def detach(self):
