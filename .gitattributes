@@ -1,0 +1,7 @@
+# ???????? LF?Windows ????? CRLF
+* text=auto eol=lf
+*.bat text eol=crlf
+*.pyw text eol=lf
+*.ico binary
+*.webp binary
+*.png binary
