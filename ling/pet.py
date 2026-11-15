@@ -23,10 +23,10 @@ from .settings_ui import SettingsWindow
 from .tray import Tray
 
 BG_KEY = '#FF00FF'
-LINK_COLOR = '#6A2FC4'      # 可点击的文件路径（主色系，不用下划线）
-LINK_HOVER = '#4A1E8F'
-LINK_BG = '#F1EAFB'
-LINK_BG_HOVER = '#E4D6F8'
+LINK_COLOR = '#0F766E'      # 可点击的文件路径（青绿，和名字的紫色区分）
+LINK_HOVER = '#0B5E58'
+LINK_BG = '#E3F3F0'
+LINK_BG_HOVER = '#CBE9E4'
 
 # 子窗口摆位（物理像素）：贴在灵灵左侧、底边略高于她的脚
 CHAT_SIZE = (414, 710)      # 聊天窗尺寸
@@ -194,6 +194,10 @@ class Pet(object):
         self._chat_opening = False
         self._ui_queue = queue.Queue()
         self._child_offsets = []
+        self._chat_log = paths.read_json(paths.data_path('chat_log.json'), [])
+        if not isinstance(self._chat_log, list):
+            self._chat_log = []
+        self._replaying = False
         self._attached = []          # 拖进来/选进来的文件
         self._file_options = []      # 当前的编号选项
         self._pending_act = None     # 等待确认的动作
@@ -933,7 +937,8 @@ class Pet(object):
         for i, (label, _act) in enumerate(options, 1):
             rows.append('%d. %s' % (i, label))
         rows.append('回数字就行，也可以直接说别的。')
-        self._chat_add('灵灵', '\n'.join(rows), links=links)
+        self._chat_add('灵灵', '\n'.join(rows), links=links,
+                       meta={'attached': files, 'options': options})
         self.say('收到文件啦～', 3000)
 
     def _build_file_options(self, files):
@@ -1029,7 +1034,7 @@ class Pet(object):
 
     def _run_convert(self, act):
         files = list(self._attached)
-        label = self._chat_add('灵灵', '开始转换 %d 个文件…' % len(files))
+        label = self._chat_add('灵灵', '开始转换 %d 个文件…' % len(files), log=False)
 
         def work():
             try:
@@ -1161,8 +1166,12 @@ class Pet(object):
     def clear_chat(self):
         """清空聊天记录：内存、界面、history.json 一起清。"""
         self._chat_msgs = []
+        self._chat_log = []
+        self._attached = []
+        self._file_options = []
         try:
             paths.write_json(paths.data_path('history.json'), [])
+            paths.write_json(paths.data_path('chat_log.json'), [])
         except Exception:
             pass
         try:
@@ -1253,12 +1262,13 @@ class Pet(object):
                   font=('Microsoft YaHei', 10), command=lambda: self._send(entry)
                   ).pack(side='left', padx=(8, 0), ipadx=10, ipady=3)
 
-        self._chat_add('灵灵', '想说什么都可以，我就在这儿陪你～')
-        for m in self._load_history()[-20:]:
-            self._chat_add('灵灵' if m.get('role') == 'assistant' else '你', m.get('text', ''))
+        if self._chat_log:
+            self._replay_chat_log()
+        else:
+            self._chat_add('灵灵', '想说什么都可以，我就在这儿陪你～')
         entry.focus_set()
 
-    def _chat_add(self, who, text, links=None):
+    def _chat_add(self, who, text, links=None, meta=None, log=True):
         """加一条聊天消息；links 里的每项 (显示文字, 路径) 会渲染成可点击的链接。"""
         try:
             row = tk.Frame(self._chat_inner, bg='#FFFFFF')
@@ -1281,10 +1291,56 @@ class Pet(object):
                 link.bind('<Button-1>', lambda e, p=path: self._open_location(p))
                 link.bind('<Enter>', lambda e, w=link: w.config(bg=LINK_BG_HOVER))
                 link.bind('<Leave>', lambda e, w=link: w.config(bg=LINK_BG))
+            if log and not getattr(self, '_replaying', False):
+                entry = {'who': who, 'text': text or '', 'ts': time.time(),
+                         'links': [[str(a), str(b)] for a, b in (links or [])]}
+                if meta:
+                    entry['meta'] = meta
+                self._chat_log.append(entry)
+                if len(self._chat_log) > 300:
+                    self._chat_log = self._chat_log[-300:]
+                idx = len(self._chat_log) - 1
+                if lab is not None:
+                    try:
+                        lab._log_index = idx
+                    except Exception:
+                        pass
+                self._save_chat_log()
             self._chat_scroll_bottom()
             return lab if lab is not None else row
         except Exception:
             return None
+
+    def _save_chat_log(self):
+        try:
+            paths.write_json(paths.data_path('chat_log.json'), self._chat_log[-300:])
+        except Exception:
+            pass
+
+    def _patch_log(self, lab, text):
+        """流式回复完成后，把记录里的占位符替换成最终文本。"""
+        try:
+            idx = getattr(lab, '_log_index', None)
+            if idx is None or idx >= len(self._chat_log):
+                return
+            self._chat_log[idx]['text'] = text
+            self._save_chat_log()
+        except Exception:
+            pass
+
+    def _replay_chat_log(self):
+        self._replaying = True
+        try:
+            for item in self._chat_log[-200:]:
+                meta = item.get('meta') or {}
+                if meta.get('attached'):
+                    self._attached = list(meta['attached'])
+                    self._file_options = [tuple(x) for x in (meta.get('options') or [])]
+                links = [tuple(x) for x in (item.get('links') or [])]
+                self._chat_add(item.get('who') or '灵灵', item.get('text') or '', links=links)
+        finally:
+            self._replaying = False
+        self._chat_scroll_bottom()
 
     def _chat_scroll_bottom(self):
         """等布局更新完再滚到底，否则新消息会露出一半。"""
@@ -1374,7 +1430,8 @@ class Pet(object):
                 try:
                     if label is not None and label.winfo_exists():
                         label.config(text=clean)
-                        self._chat_canvas.yview_moveto(1.0)
+                        self._patch_log(label, clean)
+                        self._chat_scroll_bottom()
                 except Exception:
                     pass
                 self.say(clean[:40], 4200)
@@ -1391,6 +1448,7 @@ class Pet(object):
                 try:
                     if label is not None and label.winfo_exists():
                         label.config(text='（%s）' % err, fg='#C62828')
+                        self._patch_log(label, '（%s）' % err)
                 except Exception:
                     pass
                 self._say_offline(q)
