@@ -30,3 +30,6 @@ desktop.ini
 tests/_tmp/
 
 data/chat_log.json
+
+data/ffmpeg.exe
+data/ffmpeg_download.zip

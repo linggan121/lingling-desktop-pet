@@ -26,21 +26,32 @@
 - **文件助理（核心）**
   把文件（或文件夹）拖到灵灵身上，她会列出来并给编号选项：
 
+  **选项会按文件内容来给**，不是固定的：
+
   ```
-  收到 2个文件，你要哪样？
+  拖一份带表格的 Word：
+  1. 提取文字
+  2. 转成 Markdown
+  3. 导出里面的表格（CSV）
+
+  拖一张图片：
   1. 转成 webp
-  2. 用 to-pdf 预设
-  3. 转成 jpg（质量 80）
-  回数字就行，也可以直接说别的。
+  2. 转成 jpg（质量 80）
+  3. 转成 png
+  4. 长边缩到 1080
+  5. 转成 PDF
   ```
 
   - 回 **数字** → 直接执行
-  - 直接说 **「转成 heic」「用 to-pdf 预设」「质量 60」「盯着这个文件夹」** → 复述确认后执行
-  - 背后接 [Filee](https://github.com/KnifeLemon/Filee)（MIT，离线）：**270 种格式、预设、质量、批量**
-  - **盯着文件夹**：后台监听，新文件自动转（说「停止监听」就停）
+  - 直接说 **「转成 heic」「质量 60」「盯着这个文件夹」** → 复述确认后执行
+  - **全部走内置引擎**，不用装任何东西：图片 30+ 格式、HEIC、图片→PDF、PDF 拆图/提字、
+    Word/Excel/PPT 提文字、文档转 Markdown、表格导 CSV、提取文档图片、zip 打包解压、
+    视频→mp4/mp3/gif
+  - **盯着文件夹**：内置监听，新文件自动转到 `converted/`（说「停止监听」就停）
   - 不会的事直接说不会，不瞎答应
 - **文件位置可点**：聊天里出现的文件都是青绿色小胶囊，点一下在资源管理器里打开并选中
 - **记得聊天**：对话、拖进来的文件、转好的文件都存在本地，关掉窗口再打开还在，编号也还能接着回
+- **能翻历史**：聊天窗支持鼠标滚轮、PageUp/PageDown、Home/End，右侧有滚动条；往上翻时新消息不会把你拽回底部
 - **桌面住客**：无边框、不占任务栏、置顶、可拖动、位置记忆、贴边吸附、托盘、单实例
 - **会聊天**：接任意 OpenAI 兼容服务（DeepSeek / 豆包 / 硅基流动 / Kimi / 智谱 / 通义 / OpenRouter / 本地 Ollama），流式逐字回复；没配 Key 时只说自己内置的台词
 - **记得你**：每聊 8 轮提炼一次「关于你的事」，存成本地事实卡
@@ -57,7 +68,8 @@
 
 ### 方式一：直接用 exe
 
-到 **[Releases](https://github.com/linggan121/lingling-desktop-pet/releases/latest)** 下载 `lingling-v2.1.4-win64.exe`，双击即可。首次启动约 3–5 秒。
+到 **[Releases](https://github.com/linggan121/lingling-desktop-pet/releases/latest)** 下载安装包，双击即可。
+首次启动约 5–8 秒（自带转换引擎，体积比以前大），之后很快。
 
 运行数据在：
 
@@ -85,11 +97,11 @@ python  灵灵.pyw --settings   # 启动并打开设置
 
 需要 Python 3.9+（tkinter 是标准库自带的）。
 
-### 想用文件转换？先装 Filee
+### 文件转换需要什么？
 
-文件转换交给 [Filee](https://github.com/KnifeLemon/Filee)（MIT、离线、270 种格式）。
-装好后灵灵会自动找到它的命令行（PATH 里的 `filee`，或 `D:\Filee`、`%LOCALAPPDATA%\Programs\Filee`）。
-没装也能正常用桌宠，只是拖文件时她会说暂时只能陪你聊天。
+**什么都不用装。** 转换引擎已经内置在灵灵里（Pillow / PyMuPDF / pillow-heif / py7zr 等）。
+只有**视频/音频**转换第一次用时会自动下载 FFmpeg（约 80 MB，存到 `%LOCALAPPDATA%\灵灵\ffmpeg.exe`），
+之后再转就不用联网了。
 
 ---
 
@@ -106,9 +118,11 @@ python  灵灵.pyw --settings   # 启动并打开设置
 | `1` / `2` / `3` | 执行对应编号选项 |
 | `转成 webp`、`换成 png`、`导出 pdf` | 转换格式 |
 | `转成 jpg，质量 80` | 带质量参数 |
-| `用 to-pdf 预设`、`用 Half size` | 用 Filee 的预设 |
+| `解压` | 解压 zip / 7z 到旁边 |
 | `你支持哪些格式` | 列出 270 种格式 |
 | `盯着这个文件夹，转成 jpg` | 后台监听，新文件自动转 |
+| `提取文字` | PDF / Word / PPT → txt |
+| `转成 mp4`、`提取音频 mp3`、`转成 gif` | 视频/音频转换（首次会下 FFmpeg）|
 | `停止监听` | 结束监听 |
 
 做不到的（合并、拆分、重命名、整理、OCR、翻译…）她会直接说明，不会假装能做。
@@ -153,8 +167,8 @@ python  灵灵.pyw --settings   # 启动并打开设置
 ├── ling/
 │   ├── pet.py            窗口、交互、聊天、技能接线
 │   ├── dnd.py            拖放接收（Win32 WM_DROPFILES）
-│   ├── fileops.py        Filee CLI 封装（格式/预设/转换/监听）
-│   ├── intent.py         自然语言指令 → 意图
+│   ├── convert_engine.py 内置转换引擎（图片/PDF/Office/压缩包/媒体）
+│   ├── intent.py         自然语言指令 → 意图（部分场景在用）
 │   ├── llm.py            OpenAI 兼容 / Ollama / 多模态
 │   ├── vision.py         看屏幕：截屏、隐私过滤
 │   ├── frames.py         切帧 + 缓存
@@ -167,7 +181,7 @@ python  灵灵.pyw --settings   # 启动并打开设置
 │   ├── settings_ui.py    设置窗口
 │   ├── tray.py           托盘
 │   └── paths.py          路径 + 原子写
-├── tests/                58 个单元测试（不弹窗、不联网）
+├── tests/                61 个单元测试（不弹窗、不联网）
 ├── assets/               精灵图、图标
 ├── data/                 默认台词与人设
 └── docs/screenshots/     截图
@@ -204,10 +218,11 @@ pyinstaller --onefile --windowed --name 灵灵 --icon assets/app.ico ^
 
 ## 已知限制
 
-- 文件转换依赖本机安装 Filee（灵灵只做调度，不做转换引擎）
+- 视频/音频转换需要 FFmpeg：首次使用自动下载（约 80 MB 压缩包 / 160 MB 可执行文件），之后离线可用
+- Office 文档目前只做「提取文字 / 转 CSV」，不做 docx→pdf（那需要 LibreOffice）
 - 拖拽只在 Windows 上验证过
 - 素材一帧约 112×198 像素，放大偏软；tkinter 的透明是色键方案，边缘是硬边
-- 目前只做「格式转换 / 预设 / 质量 / 监听」这几类文件操作，其余见 [ROADMAP.md](ROADMAP.md)
+- 文档只做「提取文字 / Markdown / 表格 CSV / 提图片」，不做 docx→pdf（需要 LibreOffice）
 
 ---
 

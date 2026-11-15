@@ -13,7 +13,7 @@ import tkinter as tk
 
 from PIL import Image
 
-from . import config, dnd, fileops, frames, intent, llm, mood, outfits, paths, vision, wardrobe
+from . import config, convert_engine as engine, dnd, frames, intent, llm, mood, outfits, paths, vision, wardrobe
 from . import memory as memory_mod
 from . import persona as persona_mod
 from .anim import Animator
@@ -201,8 +201,9 @@ class Pet(object):
         self._attached = []          # 拖进来/选进来的文件
         self._file_options = []      # 当前的编号选项
         self._pending_act = None     # 等待确认的动作
-        self._watch_proc = None      # filee watch 的进程
-        self._filee = fileops.find_cli()
+        self._watch_proc = None      # 旧的监听句柄（保留字段）
+        self._converter = True          # 内置引擎，永远可用
+        self._watcher = None            # 文件夹监听线程
         self._dnd = None
 
         self._bind()
@@ -914,6 +915,7 @@ class Pet(object):
         if not files:
             return
         self._attached = files
+        self._chat_autoscroll = True
         try:
             self.open_chat()
         except Exception:
@@ -928,11 +930,6 @@ class Pet(object):
 
         options = self._build_file_options(files)
         self._file_options = options
-        if not self._filee:
-            text = '收到 %d个文件（还没装 Filee，暂时只能陪你聊天）' % len(files)
-            self._chat_add('灵灵', text, links=links)
-            self.say('收到文件啦～', 3000)
-            return
         rows = ['收到 %d个文件，你要哪样？' % len(files)]
         for i, (label, _act) in enumerate(options, 1):
             rows.append('%d. %s' % (i, label))
@@ -942,33 +939,26 @@ class Pet(object):
         self.say('收到文件啦～', 3000)
 
     def _build_file_options(self, files):
-        """按拖进来的东西给出可执行的选项。"""
-        opts = [
-            ('转成 webp', {'action': 'convert', 'to': 'webp', 'preset': '', 'quality': None}),
-            ('用 to-pdf 预设', {'action': 'convert', 'to': '', 'preset': 'to-pdf', 'quality': None}),
-            ('转成 jpg（质量 80）', {'action': 'convert', 'to': 'jpg', 'preset': '', 'quality': 80}),
-        ]
-        folder = next((f for f in files if os.path.isdir(f)), '')
-        if folder:
-            opts.append(('盯着这个文件夹，新文件转成 jpg',
-                         {'action': 'watch', 'to': 'jpg', 'preset': '', 'folder': folder}))
-        return opts
+        """按文件内容给选项（引擎先看内容，再决定给哪几项）。"""
+        try:
+            return engine.options_for(files)
+        except Exception:
+            return [('转成 webp', {'op': 'convert', 'target': 'webp'}),
+                    ('转成 jpg', {'op': 'convert', 'target': 'jpg'}),
+                    ('转成 png', {'op': 'convert', 'target': 'png'})]
 
     def pick_files(self):
-        if not self._filee:
-            self.say('还没装 Filee，装好我才能转文件哦', 4000)
-            return
         from tkinter import filedialog
         files = filedialog.askopenfilenames(title='选要处理的文件')
         if files:
             self._on_files_dropped(list(files))
 
-    UNSUPPORTED_HINTS = ('拆', '合并', '重命名', '改名', '整理', '归类', '归档', '压缩', '解压',
+    UNSUPPORTED_HINTS = ('合并', '拆分', '重命名', '改名', '整理', '归类', '归档',
                          '加密', '解密', '翻译', '对比', '去重', '排序', '删除', '移动',
                          '复制', '查找', '搜索', '识别', 'ocr')
 
     def _handle_file_request(self, text):
-        if not self._attached or not self._filee:
+        if not self._attached:
             return False
 
         # 1) 回了数字 → 直接执行对应选项
@@ -983,24 +973,17 @@ class Pet(object):
             self._chat_add('灵灵', '只有 1 到 %d 这几个选项哦。' % len(self._file_options))
             return True
 
-        try:
-            fmts = fileops.format_names()
-            preset_list = fileops.presets()
-        except Exception:
-            fmts, preset_list = [], []
-        act = intent.parse(text, formats=fmts, presets=preset_list, attached=self._attached)
-
+        # 2) 自己说别的
+        act = self._parse_request(text)
         if act:
-            kind = act.get('action')
-            if kind in ('convert', 'watch'):
-                # 2) 自己说别的 → 先把要做什么说清楚，再执行
+            kind = act.get('op') or act.get('action') or 'convert'
+            if kind in ('convert', 'extract', 'pdf_split', 'docx_md',
+                        'docx_tables', 'docx_images', 'zip_list'):
                 self._chat_add('灵灵', '收到，我这样做：%s' % self._describe(act))
                 self._execute(act)
-            elif kind == 'watch_need_format':
-                self._chat_add('灵灵', '要转成什么格式？比如「盯着这个文件夹转成 webp」')
-            elif kind == 'stop_watch':
-                self._stop_watch()
-            elif kind == 'list_formats':
+            elif kind == 'list':
+                self._list_formats()
+            elif kind == 'help':
                 self._list_formats()
             else:
                 return False
@@ -1010,48 +993,116 @@ class Pet(object):
         low = (text or '').lower()
         if any(hint in low for hint in self.UNSUPPORTED_HINTS):
             self._chat_add('灵灵',
-                           '这个我还不会。我目前只会：换格式（270 种）、用预设、调图片质量、'
-                           '盯着文件夹自动转。你说的「%s」得等以后。' % (text or '')[:20])
+                           '这个我还不会。我目前只会：转图片格式、图片转 PDF、PDF 拆图/提字、'
+                           'Word/Excel/PPT 提文字、zip 打包解压、视频转 mp4/mp3/gif。'
+                           '你说的「%s」得等以后。' % (text or '')[:20])
             return True
         return False
 
+    def _parse_request(self, text):
+        """把一句话解析成动作（内置引擎版）。"""
+        raw = (text or '').strip()
+        low = raw.lower()
+        if not raw:
+            return None
+        if any(w in low for w in ('哪些格式', '能做什么', '会什么', '帮助', 'help')):
+            return {'action': 'help'}
+
+        act = {'action': 'convert', 'target': '', 'quality': None, 'resize': None}
+
+        import re
+        m = re.search(r'质量\s*[:：]?\s*(\d{1,3})', raw)
+        if m:
+            act['quality'] = max(1, min(100, int(m.group(1))))
+        m = re.search(r'(?:长边|宽度|高度|缩到|缩放到)\s*(\d{3,5})', raw)
+        if m:
+            act['resize'] = int(m.group(1))
+
+        if '解压' in raw or '解开' in raw:
+            act['action'] = 'extract'
+            return act
+        if ('打包' in raw or '压缩' in raw) and '视频' not in raw:
+            act['target'] = 'zip'
+            return act
+        if 'markdown' in low or 'md 格式' in low or ('md' in low and len(low) < 12):
+            return {'op': 'docx_md'}
+        if '表格' in raw and ('导出' in raw or 'csv' in low or '提取' in raw):
+            return {'op': 'docx_tables'}
+        if '图片' in raw and ('提取' in raw or '拿出' in raw):
+            return {'op': 'docx_images'}
+        if '拆' in raw and 'pdf' in low:
+            return {'op': 'pdf_split'}
+        if '看看' in raw or '有什么' in raw or '内容' in raw:
+            if '压缩' in raw or 'zip' in low or '包' in raw:
+                return {'op': 'zip_list'}
+        if '提取' in raw or '文字' in raw or ('文本' in raw and 'txt' not in low):
+            act['target'] = 'txt'
+            return act
+
+        for target in engine.TARGETS:
+            if target in low:
+                act['target'] = target
+                return act
+        # 中文说法
+        zh = {'图片': 'png', '照片': 'jpg', '文档': 'txt', '表格': 'csv', '视频': 'mp4', '音频': 'mp3'}
+        for word, target in zh.items():
+            if word in raw:
+                act['target'] = target
+                return act
+        if act['quality'] or act['resize']:
+            act['target'] = 'jpg' if 'jpg' in low else act['target'] or 'webp'
+            return act
+        return None
+
     def _describe(self, act):
-        kind = act.get('action')
-        target = act.get('to') or act.get('preset') or ''
+        op = (act or {}).get('op') or 'convert'
+        target = (act or {}).get('target') or ''
+        names = {
+            'extract': '把 %d个压缩包解压到旁边',
+            'zip_list': '列一下压缩包里有什么',
+            'pdf_split': '把 PDF 按页拆成单个文件',
+            'docx_md': '把文档转成 Markdown',
+            'docx_tables': '把文档里的表格导出成 CSV',
+            'docx_images': '把文档里的图片提取出来',
+        }
+        if op in names:
+            return names[op] % len(self._attached) if '%d' in names[op] else names[op]
+        extra = ''
         if act.get('quality'):
-            target += '，质量 %d' % act['quality']
-        if kind == 'watch':
-            folder = act.get('folder') or ''
-            return '盯着「%s」，新文件都转成 %s' % (os.path.basename(folder.rstrip('\\/')) or folder, target)
-        return '把 %d个文件转成 %s（放在原目录）' % (len(self._attached), target)
+            extra += '，质量 %d' % act['quality']
+        if act.get('resize'):
+            extra += '，长边缩到 %d' % act['resize']
+        if target == 'zip':
+            return '把 %d个东西打包成 zip' % len(self._attached)
+        return '把 %d个文件转成 %s%s' % (len(self._attached), target or '同名格式', extra)
 
     def _execute(self, act):
-        kind = act.get('action')
-        if kind == 'convert':
-            self._run_convert(act)
-        elif kind == 'watch':
-            self._run_watch(act)
+        op = (act or {}).get('op') or (act or {}).get('action') or 'convert'
+        if op == 'help':
+            self._list_formats()
+            return
+        if op in ('convert', 'extract', 'zip_list', 'pdf_split',
+                  'docx_md', 'docx_tables', 'docx_images'):
+            self._run_op(act)
 
-    def _run_convert(self, act):
+    def _run_op(self, act):
         files = list(self._attached)
-        label = self._chat_add('灵灵', '开始转换 %d 个文件…' % len(files), log=False)
+        label = self._chat_add('灵灵', '开始处理 %d 个文件…' % len(files), log=False)
 
         def work():
+            res = {'outputs': []}
             try:
-                res = fileops.convert(files, to=act.get('to') or None,
-                                      preset=act.get('preset') or None,
-                                      quality=act.get('quality'))
+                res = engine.run_op(files, act, data_dir=paths.data_path(''))
                 text = res['message']
                 if res.get('errors'):
                     text += '（%s）' % res['errors'][0]
             except Exception as e:
-                text = '转换没成功：%s' % str(e)[:60]
-                res = {'outputs': []}
+                text = '没成功：%s' % str(e)[:60]
 
             def ui():
                 try:
                     if label is not None and label.winfo_exists():
-                        label.master.destroy()      # 去掉“开始转换…”
+                        label.master.destroy()
                 except Exception:
                     pass
                 links = [('· ' + os.path.basename(p), p)
@@ -1069,41 +1120,41 @@ class Pet(object):
         if not folder or not os.path.isdir(folder):
             self._chat_add('灵灵', '把要盯着的文件夹拖给我，或者直接说「盯着 D:\\下载」')
             return
+        target = act.get('target') or 'jpg'
         try:
             self._stop_watch(silent=True)
-            self._watch_proc = fileops.start_watch(folder, to=act.get('to') or None,
-                                                   preset=act.get('preset') or None)
+            self._watcher = engine.FolderWatcher(
+                folder, target, data_dir=paths.data_path(''),
+                on_done=lambda res: self._post(lambda: self.say(res['message'][:40], 4200)))
+            self._watcher.start()
             name = os.path.basename(folder.rstrip('\\/')) or folder
-            out_dir = os.path.join(folder.rstrip('\\/'), 'converted')
-            self._chat_add('灵灵', '好，我盯着「%s」了，新文件会自动转成 %s。\n'
-                                   '说「停止监听」我就停。' % (name, act.get('to') or act.get('preset')),
-                           links=[('▸ converted（转好的文件都在这儿）', out_dir)])
+            self._chat_add('灵灵', '好，我盯着「%s」了，新文件自动转成 %s。\n说「停止监听」我就停。'
+                           % (name, target),
+                           links=[('▸ 转好的都放这儿', folder)])
             self.say('盯好啦～', 3200)
         except Exception as e:
             self._chat_add('灵灵', '盯不住：%s' % str(e)[:50])
 
     def _stop_watch(self, silent=False):
-        proc = self._watch_proc
-        self._watch_proc = None
-        if proc is not None:
+        watcher = self._watcher
+        self._watcher = None
+        if watcher is not None:
             try:
-                proc.terminate()
+                watcher.stop()
             except Exception:
                 pass
             if not silent:
                 self._chat_add('灵灵', '不盯了，监听已经停掉。')
 
     def _list_formats(self):
-        try:
-            names = fileops.format_names()
-        except Exception:
-            names = []
-        if not names:
-            self.say('还没装 Filee，装好我才能转文件哦', 4000)
-            return
-        self._chat_add('灵灵', '我会转 %d 种格式，常用的这些：\n%s'
-                       % (len(names), '、'.join(names[:28])))
-        self.say('我能转 %d 种格式～' % len(names), 4200)
+        targets = '、'.join(engine.TARGETS)
+        self._chat_add('灵灵', '我现在内置能做这些：\n'
+                               '· 图片互转：%s\n'
+                               '· 图片 → PDF、PDF → 图片/文字\n'
+                               '· Word / Excel / PPT → 文字\n'
+                               '· zip 打包、zip/7z 解压\n'
+                               '· 视频 → mp4、提取 mp3、转 gif' % targets)
+        self.say('都能做～', 4200)
 
     # ---------------- 看屏幕 ----------------
     def _log(self, text):
@@ -1242,7 +1293,9 @@ class Pet(object):
         body.pack(fill='both', expand=True, padx=10, pady=8)
 
         canvas = tk.Canvas(body, bg='#FFFFFF', highlightthickness=0)
-        sb = tk.Scrollbar(body, orient='vertical', command=canvas.yview)
+        sb = tk.Scrollbar(body, orient='vertical', command=canvas.yview, width=14,
+                          troughcolor='#EDE4FA', bg='#B79BE6', activebackground='#9F80D9',
+                          relief='flat', bd=0)
         inner = tk.Frame(canvas, bg='#FFFFFF')
         inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
         canvas.create_window((0, 0), window=inner, anchor='nw')
@@ -1252,6 +1305,25 @@ class Pet(object):
 
         self._chat_inner = inner
         self._chat_canvas = canvas
+        self._chat_autoscroll = True
+
+        def on_wheel(event):
+            delta = -3 if event.delta > 0 else 3
+            canvas.yview_scroll(delta, 'units')
+            self._chat_autoscroll = False
+            return 'break'
+
+        def scroll_key(event, units):
+            canvas.yview_scroll(units, 'units')
+            self._chat_autoscroll = False
+            return 'break'
+
+        for widget in (canvas, inner, win):
+            widget.bind('<MouseWheel>', on_wheel, add='+')
+        win.bind('<Prior>', lambda e: scroll_key(e, -10), add='+')
+        win.bind('<Next>', lambda e: scroll_key(e, 10), add='+')
+        win.bind('<Home>', lambda e: (canvas.yview_moveto(0), setattr(self, '_chat_autoscroll', False)), add='+')
+        win.bind('<End>', lambda e: (canvas.yview_moveto(1.0), setattr(self, '_chat_autoscroll', True)), add='+')
 
         bottom = tk.Frame(win, bg='#FFFFFF')
         bottom.pack(fill='x', padx=10, pady=(0, 10))
@@ -1343,14 +1415,15 @@ class Pet(object):
         self._chat_scroll_bottom()
 
     def _chat_scroll_bottom(self):
-        """等布局更新完再滚到底，否则新消息会露出一半。"""
+        """等布局更新完再滚到底；用户往上翻过就别抢他的位置。"""
         def go():
             try:
                 if self._chat_canvas is None or not self._chat_canvas.winfo_exists():
                     return
                 self._chat_inner.update_idletasks()
                 self._chat_canvas.configure(scrollregion=self._chat_canvas.bbox('all'))
-                self._chat_canvas.yview_moveto(1.0)
+                if getattr(self, '_chat_autoscroll', True):
+                    self._chat_canvas.yview_moveto(1.0)
             except Exception:
                 pass
 
@@ -1381,6 +1454,7 @@ class Pet(object):
         if not q:
             return
         entry.delete(0, 'end')
+        self._chat_autoscroll = True
         self._chat_add('你', q)
         self._chat_msgs.append({'role': 'user', 'content': q})
         self._turn_count += 1
