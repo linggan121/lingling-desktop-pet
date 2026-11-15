@@ -184,6 +184,16 @@ pyinstaller --onefile --windowed --name 灵灵 --icon assets/app.ico ^
 - 情绪解析的思路来自 [luna-desktop-pet](https://github.com/Elysia20230/luna-desktop-pet)（MIT）
 - 漫游节奏与插件化设计参考了 [jarvis](https://github.com/ynnyh/jarvis)（MIT）
 
+## 素材版权
+
+- **代码**（`ling/`、`灵灵.pyw`、`tests/`）采用 [MIT](LICENSE)，可自由使用、修改、商用
+- **角色立绘与图标**（`assets/spritesheet.webp`、`assets/app*.ico/png`）**不是本项目原创**，
+  不在 MIT 授权范围内，收录仅用于功能演示与学习；商用或再分发前请自行确认原作者许可
+- 详见 [assets/NOTICE.md](assets/NOTICE.md)
+
+> 如果你要拿这个项目做**正式产品或商用**，建议先把立绘换成自己有权利的素材
+> —— 换素材只需要替换 `assets/spritesheet.webp` + `frames.json`，代码一行都不用改。
+
 ## License
 
-[MIT](LICENSE)
+代码：[MIT](LICENSE)（素材除外，见上）
