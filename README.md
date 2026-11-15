@@ -12,6 +12,7 @@
   <img src="https://img.shields.io/badge/python-3.9%2B-7c3ddb" alt="Python">
   <img src="https://img.shields.io/badge/platform-Windows-7c3ddb" alt="Platform">
   <img src="https://img.shields.io/badge/status-WIP-orange" alt="Status">
+  <a href="https://github.com/linggan121/lingling-desktop-pet/releases/latest"><img src="https://img.shields.io/badge/下载-Windows%20exe-2ea44f" alt="Download"></a>
 </p>
 
 <p align="center">
@@ -58,7 +59,7 @@
 
 ### 方式一：直接用 exe（推荐给不想装 Python 的人）
 
-到 Releases 下载 `灵灵.exe`，双击即可。首次启动会解压运行时并切帧，约 3–5 秒。
+到 **[Releases](https://github.com/linggan121/lingling-desktop-pet/releases/latest)** 下载 `lingling-v2.0.0-win64.exe`，双击即可。首次启动会解压运行时并切帧，约 3–5 秒。
 
 运行数据在：
 
