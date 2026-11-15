@@ -28,3 +28,5 @@ desktop.ini
 
 # ??????
 tests/_tmp/
+
+data/chat_log.json
