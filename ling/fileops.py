@@ -195,11 +195,11 @@ def convert(paths, to=None, preset=None, quality=None, out=None,
         converted, failed, skipped = (1, 0, 0) if code == 0 else (0, 1, 0)
 
     if code == 0 and converted:
-        message = '好了，%d 个文件转完了' % converted
+        message = '好了，%d个都转完了' % converted
     elif code == 3:
         message = '没有能转的文件（格式可能不支持）'
     elif failed:
-        message = '%d 个成功，%d 个失败' % (converted, failed)
+        message = '%d个成功，%d个失败' % (converted, failed)
     else:
         message = '转换失败' + ('：' + errors[0] if errors else '')
     return {'ok': code == 0 and converted > 0, 'converted': converted, 'failed': failed,

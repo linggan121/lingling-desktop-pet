@@ -6,6 +6,7 @@ import io
 import os
 import queue
 import random
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -22,6 +23,8 @@ from .settings_ui import SettingsWindow
 from .tray import Tray
 
 BG_KEY = '#FF00FF'
+LINK_COLOR = '#1B6BD6'      # 可点击的文件路径
+LINK_HOVER = '#0B4EA2'
 
 # 子窗口摆位（物理像素）：贴在灵灵左侧、底边略高于她的脚
 CHAT_SIZE = (414, 710)      # 聊天窗尺寸
@@ -903,18 +906,20 @@ class Pet(object):
             self.open_chat()
         except Exception:
             pass
-        rows = []
-        for p in files[:8]:
+        links = []
+        for p in files[:10]:
             name = os.path.basename(p.rstrip('\\/')) or p
-            rows.append('· ' + name + ('（文件夹）' if os.path.isdir(p) else ''))
-        more = '' if len(files) <= 8 else '\n· …还有 %d 个' % (len(files) - 8)
+            icon = '▸' if os.path.isdir(p) else '·'
+            links.append(('%s %s%s' % (icon, name, '（文件夹）' if os.path.isdir(p) else ''), p))
+        if len(files) > 10:
+            links.append(('…还有 %d 个' % (len(files) - 10), os.path.dirname(files[0])))
         if self._filee:
-            tip = ('想让我怎么处理？可以直说：\n'
-                   '「转成 webp」「用 to-pdf 预设」「质量 80」「盯着这个文件夹」')
+            tip = ('想让我怎么处理？\n'
+                   '「转成 webp」「用 to-pdf 预设」\n「质量 80」「盯着这个文件夹」')
         else:
             tip = '（还没检测到 Filee，装上之后才能帮你转文件）'
-        self._chat_add('灵灵', '收到 %d 个文件：\n%s%s\n\n%s'
-                       % (len(files), '\n'.join(rows), more, tip))
+        self._chat_add('灵灵', '收到 %d个文件，点名字就能打开位置：' % len(files), links=links)
+        self._chat_add('灵灵', tip)
         self.say('收到文件啦～', 3000)
 
     def pick_files(self):
@@ -962,20 +967,21 @@ class Pet(object):
                                       preset=act.get('preset') or None,
                                       quality=act.get('quality'))
                 text = res['message']
-                if res['outputs']:
-                    text += '：' + '、'.join(os.path.basename(p) for p in res['outputs'][:4])
                 if res.get('errors'):
                     text += '（%s）' % res['errors'][0]
             except Exception as e:
                 text = '转换没成功：%s' % str(e)[:60]
+                res = {'outputs': []}
 
             def ui():
                 try:
                     if label is not None and label.winfo_exists():
-                        label.config(text=text)
-                        self._chat_canvas.yview_moveto(1.0)
+                        label.master.destroy()      # 去掉“开始转换…”
                 except Exception:
                     pass
+                links = [('· ' + os.path.basename(p), p)
+                         for p in (res.get('outputs') or [])[:10]]
+                self._chat_add('灵灵', text, links=links)
                 self.say(text[:40], 5200)
                 self.play_index()
 
@@ -994,9 +1000,9 @@ class Pet(object):
                                                    preset=act.get('preset') or None)
             name = os.path.basename(folder.rstrip('\\/')) or folder
             out_dir = os.path.join(folder.rstrip('\\/'), 'converted')
-            self._chat_add('灵灵', '好，我盯着「%s」了，新文件会自动转成 %s，'
-                                   '转好的放在「%s」里。\n说「停止监听」我就停。'
-                           % (name, act.get('to') or act.get('preset'), out_dir))
+            self._chat_add('灵灵', '好，我盯着「%s」了，新文件会自动转成 %s。\n'
+                                   '说「停止监听」我就停。' % (name, act.get('to') or act.get('preset')),
+                           links=[('▸ converted（转好的文件都在这儿）', out_dir)])
             self.say('盯好啦～', 3200)
         except Exception as e:
             self._chat_add('灵灵', '盯不住：%s' % str(e)[:50])
@@ -1182,21 +1188,67 @@ class Pet(object):
             self._chat_add('灵灵' if m.get('role') == 'assistant' else '你', m.get('text', ''))
         entry.focus_set()
 
-    def _chat_add(self, who, text):
+    def _chat_add(self, who, text, links=None):
+        """加一条聊天消息；links 里的每项 (显示文字, 路径) 会渲染成可点击的链接。"""
         try:
             row = tk.Frame(self._chat_inner, bg='#FFFFFF')
             row.pack(fill='x', pady=4)
             color = '#7C3DDB' if who == '灵灵' else '#2C2738'
             tk.Label(row, text=who, bg='#FFFFFF', fg=color,
                      font=('Microsoft YaHei', 9, 'bold')).pack(anchor='w')
-            lab = tk.Label(row, text=text, bg='#F7F5FB', fg='#2C2738', justify='left',
-                           wraplength=330, font=('Microsoft YaHei', 10),
-                           padx=10, pady=8)
-            lab.pack(anchor='w', pady=(2, 0))
-            self._chat_canvas.yview_moveto(1.0)
-            return lab
+            lab = None
+            if text:
+                lab = tk.Label(row, text=text, bg='#F7F5FB', fg='#2C2738', justify='left',
+                               wraplength=330, font=('Microsoft YaHei', 10),
+                               padx=10, pady=8)
+                lab.pack(anchor='w', pady=(2, 0))
+            for shown, path in (links or []):
+                link = tk.Label(row, text=shown, bg='#F7F5FB', fg=LINK_COLOR,
+                                justify='left', wraplength=330, cursor='hand2',
+                                font=('Microsoft YaHei', 10, 'underline'),
+                                padx=10, pady=5)
+                link.pack(anchor='w', pady=(2, 0))
+                link.bind('<Button-1>', lambda e, p=path: self._open_location(p))
+                link.bind('<Enter>', lambda e, w=link: w.config(fg=LINK_HOVER))
+                link.bind('<Leave>', lambda e, w=link: w.config(fg=LINK_COLOR))
+            self._chat_scroll_bottom()
+            return lab if lab is not None else row
         except Exception:
             return None
+
+    def _chat_scroll_bottom(self):
+        """等布局更新完再滚到底，否则新消息会露出一半。"""
+        def go():
+            try:
+                if self._chat_canvas is None or not self._chat_canvas.winfo_exists():
+                    return
+                self._chat_inner.update_idletasks()
+                self._chat_canvas.configure(scrollregion=self._chat_canvas.bbox('all'))
+                self._chat_canvas.yview_moveto(1.0)
+            except Exception:
+                pass
+
+        try:
+            self.root.after(16, go)
+        except Exception:
+            pass
+
+    def _open_location(self, path):
+        """点链接：打开文件所在文件夹并选中它（文件夹就直接打开）。"""
+        try:
+            path = str(path)
+            if os.path.isdir(path):
+                subprocess.Popen(['explorer', os.path.normpath(path)])
+            elif os.path.exists(path):
+                subprocess.Popen(['explorer', '/select,' + os.path.normpath(path)])
+            else:
+                parent = os.path.dirname(path)
+                if parent and os.path.isdir(parent):
+                    subprocess.Popen(['explorer', os.path.normpath(parent)])
+                else:
+                    self.say('这个位置打不开了…', 2200)
+        except Exception:
+            self.say('这个位置打不开了…', 2200)
 
     def _send(self, entry):
         q = entry.get().strip()
