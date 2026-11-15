@@ -188,11 +188,17 @@ pyinstaller --onefile --windowed --name 灵灵 --icon assets/app.ico ^
 
 - **代码**（`ling/`、`灵灵.pyw`、`tests/`）采用 [MIT](LICENSE)，可自由使用、修改、商用
 - **角色立绘与图标**（`assets/spritesheet.webp`、`assets/app*.ico/png`）**不是本项目原创**，
-  不在 MIT 授权范围内，收录仅用于功能演示与学习；商用或再分发前请自行确认原作者许可
-- 详见 [assets/NOTICE.md](assets/NOTICE.md)
+  来自 [Petdex](https://petdex.dev/zh) 的用户投稿宠物包，**不在 MIT 授权范围内**
 
-> 如果你要拿这个项目做**正式产品或商用**，建议先把立绘换成自己有权利的素材
-> —— 换素材只需要替换 `assets/spritesheet.webp` + `frames.json`，代码一行都不用改。
+> Petdex 官方 FAQ：*Pets are user-submitted fan art. Petdex does not claim rights to any underlying IP.*
+> *Every pet on Petdex is free to install and use. Pets keep credit to their original authors.*
+
+所以：素材是**同人二创**，平台免费给"安装/使用"，但不等同于可以再打包分发或商用。
+本项目仅把它用于功能演示，作者署名与完整说明见 [assets/NOTICE.md](assets/NOTICE.md)；
+原作者要求下架会立即移除。
+
+**要拿这个项目做正式产品或商用**，请先把立绘换成自己有权利的素材
+—— 只要替换 `assets/spritesheet.webp` + `frames.json`，代码一行都不用改。
 
 ## License
 
