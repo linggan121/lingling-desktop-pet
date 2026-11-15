@@ -12,7 +12,7 @@ import tkinter as tk
 
 from PIL import Image
 
-from . import config, frames, llm, mood, outfits, paths, vision, wardrobe
+from . import config, dnd, fileops, frames, intent, llm, mood, outfits, paths, vision, wardrobe
 from . import memory as memory_mod
 from . import persona as persona_mod
 from .anim import Animator
@@ -189,11 +189,16 @@ class Pet(object):
         self._chat_opening = False
         self._ui_queue = queue.Queue()
         self._child_offsets = []
+        self._attached = []          # 拖进来/选进来的文件
+        self._watch_proc = None      # filee watch 的进程
+        self._filee = fileops.find_cli()
+        self._dnd = None
 
         self._bind()
         self._start_tray()
 
         self.root.after(60, self._show_window)
+        self.root.after(120, self._enable_dnd)
         self.root.after(900, self.greet)
         self.root.after(2200, self._auto_act)
         self.root.after(600, self._roam_tick)
@@ -732,6 +737,11 @@ class Pet(object):
         m.add_separator()
         m.add_command(label='换个动作', command=lambda: self.play_index())
         m.add_cascade(label='换装', menu=self._outfit_menu(m))
+        skill = tk.Menu(m, tearoff=0)
+        skill.add_command(label='选文件转换…', command=self.pick_files)
+        skill.add_command(label='可用格式…', command=self._list_formats)
+        skill.add_command(label='停止监听', command=lambda: self._stop_watch())
+        m.add_cascade(label='技能', menu=skill)
         m.add_command(label='窗口搬回来', command=self.reset_windows)
         m.add_command(label='设置…', command=self.open_settings)
         m.add_command(label='回到右下角', command=self.reset_pos)
@@ -790,6 +800,15 @@ class Pet(object):
             pass
 
     def _destroy(self):
+        try:
+            self._stop_watch(silent=True)
+        except Exception:
+            pass
+        try:
+            if self._dnd is not None:
+                self._dnd.detach()
+        except Exception:
+            pass
         try:
             if self._tray:
                 self._tray.stop()
@@ -867,6 +886,143 @@ class Pet(object):
     def _save_llm(self, cfg):
         self.cfg['llm'] = cfg
         config.save(self.cfg)
+
+    # ---------------- 文件技能（拖文件 + 聊天指令） ----------------
+    def _enable_dnd(self):
+        try:
+            self._dnd = dnd.enable(self.root, self._on_files_dropped)
+        except Exception:
+            self._dnd = None
+
+    def _on_files_dropped(self, file_list):
+        files = [p for p in file_list if os.path.exists(p)]
+        if not files:
+            return
+        self._attached = files
+        try:
+            self.open_chat()
+        except Exception:
+            pass
+        rows = []
+        for p in files[:8]:
+            name = os.path.basename(p.rstrip('\\/')) or p
+            rows.append('· ' + name + ('（文件夹）' if os.path.isdir(p) else ''))
+        more = '' if len(files) <= 8 else '\n· …还有 %d 个' % (len(files) - 8)
+        if self._filee:
+            tip = ('想让我怎么处理？可以直说：\n'
+                   '「转成 webp」「用 to-pdf 预设」「质量 80」「盯着这个文件夹」')
+        else:
+            tip = '（还没检测到 Filee，装上之后才能帮你转文件）'
+        self._chat_add('灵灵', '收到 %d 个文件：\n%s%s\n\n%s'
+                       % (len(files), '\n'.join(rows), more, tip))
+        self.say('收到文件啦～', 3000)
+
+    def pick_files(self):
+        if not self._filee:
+            self.say('还没装 Filee，装好我才能转文件哦', 4000)
+            return
+        from tkinter import filedialog
+        files = filedialog.askopenfilenames(title='选要处理的文件')
+        if files:
+            self._on_files_dropped(list(files))
+
+    def _handle_file_request(self, text):
+        if not self._attached or not self._filee:
+            return False
+        try:
+            fmts = fileops.format_names()
+            preset_list = fileops.presets()
+        except Exception:
+            fmts, preset_list = [], []
+        act = intent.parse(text, formats=fmts, presets=preset_list, attached=self._attached)
+        if not act:
+            return False
+        kind = act.get('action')
+        if kind == 'convert':
+            self._run_convert(act)
+        elif kind == 'watch':
+            self._run_watch(act)
+        elif kind == 'watch_need_format':
+            self._chat_add('灵灵', '要转成什么格式？比如「盯着这个文件夹转成 webp」')
+        elif kind == 'stop_watch':
+            self._stop_watch()
+        elif kind == 'list_formats':
+            self._list_formats()
+        else:
+            return False
+        return True
+
+    def _run_convert(self, act):
+        files = list(self._attached)
+        label = self._chat_add('灵灵', '开始转换 %d 个文件…' % len(files))
+
+        def work():
+            try:
+                res = fileops.convert(files, to=act.get('to') or None,
+                                      preset=act.get('preset') or None,
+                                      quality=act.get('quality'))
+                text = res['message']
+                if res['outputs']:
+                    text += '：' + '、'.join(os.path.basename(p) for p in res['outputs'][:4])
+                if res.get('errors'):
+                    text += '（%s）' % res['errors'][0]
+            except Exception as e:
+                text = '转换没成功：%s' % str(e)[:60]
+
+            def ui():
+                try:
+                    if label is not None and label.winfo_exists():
+                        label.config(text=text)
+                        self._chat_canvas.yview_moveto(1.0)
+                except Exception:
+                    pass
+                self.say(text[:40], 5200)
+                self.play_index()
+
+            self._post(ui)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _run_watch(self, act):
+        folder = act.get('folder') or (self._attached[0] if self._attached else '')
+        if not folder or not os.path.isdir(folder):
+            self._chat_add('灵灵', '把要盯着的文件夹拖给我，或者直接说「盯着 D:\\下载」')
+            return
+        try:
+            self._stop_watch(silent=True)
+            self._watch_proc = fileops.start_watch(folder, to=act.get('to') or None,
+                                                   preset=act.get('preset') or None)
+            name = os.path.basename(folder.rstrip('\\/')) or folder
+            out_dir = os.path.join(folder.rstrip('\\/'), 'converted')
+            self._chat_add('灵灵', '好，我盯着「%s」了，新文件会自动转成 %s，'
+                                   '转好的放在「%s」里。\n说「停止监听」我就停。'
+                           % (name, act.get('to') or act.get('preset'), out_dir))
+            self.say('盯好啦～', 3200)
+        except Exception as e:
+            self._chat_add('灵灵', '盯不住：%s' % str(e)[:50])
+
+    def _stop_watch(self, silent=False):
+        proc = self._watch_proc
+        self._watch_proc = None
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            if not silent:
+                self._chat_add('灵灵', '不盯了，监听已经停掉。')
+
+    def _list_formats(self):
+        try:
+            names = fileops.format_names()
+        except Exception:
+            names = []
+        if not names:
+            self.say('还没装 Filee，装好我才能转文件哦', 4000)
+            return
+        self._chat_add('灵灵', '我会转 %d 种格式，常用的这些：\n%s'
+                       % (len(names), '、'.join(names[:28])))
+        self.say('我能转 %d 种格式～' % len(names), 4200)
 
     # ---------------- 看屏幕 ----------------
     def _log(self, text):
@@ -1053,6 +1209,9 @@ class Pet(object):
         self._last_talk = time.time()
         self._save_history()
 
+        if self._handle_file_request(q):
+            return
+
         if not llm.ready(self.cfg.get('llm')):
             self.root.after(240, lambda: self._say_offline(q))
             return
@@ -1131,6 +1290,12 @@ class Pet(object):
         facts = self.mem.prompt_block(self._last_user_text(), 5)
         sys_prompt = persona_mod.system_prompt(self.persona, facts, self._last_talk, self._mood)
         msgs = [{'role': 'system', 'content': sys_prompt}]
+        if self._attached:
+            names = '、'.join(os.path.basename(p.rstrip('\\/')) for p in self._attached[:5])
+            msgs.append({'role': 'system',
+                         'content': '用户刚拖进来这些文件：%s。'
+                                    '如果他说的是转换格式，交给本地技能处理；'
+                                    '否则当普通聊天回答，别编造文件内容。' % names})
         for m in self._chat_msgs[-10:]:
             msgs.append({'role': m['role'], 'content': m['content']})
         return msgs
