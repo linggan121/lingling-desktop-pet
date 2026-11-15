@@ -15,8 +15,8 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/pet.png" width="320" alt="桌宠">
-  <img src="docs/screenshots/chat.png" width="230" alt="聊天">
+  <img src="docs/screenshots/hero.png" width="320" alt="桌宠">
+  <img src="docs/screenshots/chat-demo.png" width="230" alt="聊天">
 </p>
 
 ---
