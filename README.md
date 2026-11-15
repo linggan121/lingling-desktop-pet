@@ -62,7 +62,7 @@
 
 ### 方式一：直接用 exe（推荐给不想装 Python 的人）
 
-到 **[Releases](https://github.com/linggan121/lingling-desktop-pet/releases/latest)** 下载 `lingling-v2.0.0-win64.exe`，双击即可。首次启动会解压运行时并切帧，约 3–5 秒。
+到 **[Releases](https://github.com/linggan121/lingling-desktop-pet/releases/latest)** 下载 `lingling-v2.1.0-win64.exe`，双击即可。首次启动会解压运行时并切帧，约 3–5 秒。
 
 运行数据在：
 
