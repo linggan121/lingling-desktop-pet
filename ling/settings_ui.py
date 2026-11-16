@@ -5,13 +5,14 @@
 """
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk
 
-from . import llm
+from . import llm, ollama
 
 ACCENT = '#7C3DDB'
 BG = '#FFFFFF'
@@ -106,16 +107,39 @@ class SettingsWindow(object):
                  bg=BG, fg=HINT, font=('Microsoft YaHei', 8), wraplength=int(430 * self.s),
                  justify='left').pack(anchor='w', pady=(2, 0))
 
+        self.local_tuned_var = tk.BooleanVar(value=True)
+        tune_row = tk.Frame(body, bg=BG)
+        tune_row.pack(anchor='w', pady=(6, 0))
+        tk.Checkbutton(tune_row, text='本地模型优化（回复更短、温度更低，适合小模型）',
+                       variable=self.local_tuned_var, bg=BG, fg=TEXT,
+                       activebackground=BG, selectcolor=BG,
+                       font=('Microsoft YaHei', 9)).pack(side='left')
+        tk.Button(tune_row, text='生成上下文配置', command=self._write_modelfile,
+                  relief='flat', bg='#EAF1FB', fg='#1F5FAF',
+                  font=('Microsoft YaHei', 8), padx=8, pady=2).pack(side='left', padx=(8, 0))
+
         self.status = tk.Label(body, text='', bg=BG, fg=HINT,
                                font=('Microsoft YaHei', 8), wraplength=430, justify='left')
         self.status.pack(anchor='w', pady=(6, 0))
 
+        self.install_row = tk.Frame(body, bg=BG)
+        self.install_btn = tk.Button(self.install_row, text='一键安装本地模型（约 3 GB）',
+                                     command=self._install_local, relief='flat',
+                                     bg='#FFF3E0', fg='#B25B00',
+                                     font=('Microsoft YaHei', 9, 'bold'),
+                                     padx=12, pady=4)
+        self.install_btn.pack(side='left')
+
+        self.local_btn = tk.Button(bar, text='本地模型', command=self._pick_local,
+                                   relief='flat', bg='#EAF1FB', fg='#1F5FAF',
+                                   font=('Microsoft YaHei', 9), padx=8, pady=4)
+        self.local_btn.pack(side='left', padx=(8, 0))
         tk.Button(bar, text='测试连接', command=self._test, relief='flat',
                   bg='#F0EBFA', fg=ACCENT, font=('Microsoft YaHei', 9),
-                  padx=12, pady=4).pack(side='left')
-        self.auto_btn = tk.Button(bar, text='自动匹配服务商', command=self._auto_match,
+                  padx=10, pady=4).pack(side='left')
+        self.auto_btn = tk.Button(bar, text='自动匹配', command=self._auto_match,
                                   relief='flat', bg='#EAF4EA', fg='#2E7D32',
-                                  font=('Microsoft YaHei', 9), padx=10, pady=4)
+                                  font=('Microsoft YaHei', 9), padx=8, pady=4)
         self.auto_btn.pack(side='left', padx=(8, 0))
         tk.Button(bar, text='保存', command=self._save, relief='flat',
                   bg=ACCENT, fg='#fff', font=('Microsoft YaHei', 9, 'bold'),
@@ -169,6 +193,22 @@ class SettingsWindow(object):
             pass
 
     # ---------------- 数据 ----------------
+    def _write_modelfile(self):
+        """按当前模型生成 Modelfile（num_ctx 4096），并说明怎么用。"""
+        model = (self.model_var.get() or '').strip() or 'qwen2.5:3b'
+        try:
+            from . import paths
+            path = ollama.write_modelfile(paths.data_path(''), model)
+        except Exception as exc:
+            self._set_status(text='生成失败：%s' % str(exc)[:50], fg='#C62828')
+            return
+        variant = model.split(':')[0] + '-lingling'
+        self._set_status(
+            text='已生成配置：%s\n接着在命令行执行：\n'
+                 'ollama create %s -f "%s"\n'
+                 '然后模型名填 %s，上下文就是 4096 了。' % (path, variant, path, variant),
+            fg='#2E7D32')
+
     def _apply_cfg(self, cfg):
         provider = cfg.get('provider') or 'deepseek'
         preset = llm.PROVIDERS.get(provider, llm.PROVIDERS['deepseek'])
@@ -181,6 +221,11 @@ class SettingsWindow(object):
         self.model_var.set(cfg.get('model') or preset.get('model', ''))
         self.key_var.set(cfg.get('api_key') or '')
         self.vision_var.set(cfg.get('vision_model') or '')
+        tuned = cfg.get('local_tuned')
+        try:
+            self.local_tuned_var.set(True if tuned is None else bool(tuned))
+        except Exception:
+            pass
         try:
             self._refresh_target()
         except Exception:
@@ -372,6 +417,204 @@ class SettingsWindow(object):
 
         threading.Thread(target=work, daemon=True).start()
 
+    # ---------------- 本地 Ollama ----------------
+    def _pick_local(self):
+        """探测本机 Ollama，列出已下载模型，选一个切过去。"""
+        self._set_status(text='正在看本机有没有 Ollama…', fg=HINT)
+
+        def work():
+            info = ollama.probe()
+            self._post(lambda: self._show_local(info))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ensure_height(self):
+        """内容变高时把窗口撑开，别把按钮挤到看不见。"""
+        try:
+            self.win.update_idletasks()
+            need = self.win.winfo_reqheight()
+            cur = self.win.winfo_height()
+            if need > cur:
+                sh = self.win.winfo_screenheight()
+                h = min(need + 6, int(sh * 0.9))
+                w = self.win.winfo_width() or self._size[0]
+                x, y = self.win.winfo_x(), self.win.winfo_y()
+                if y + h > sh - 8:
+                    y = max(8, sh - h - 8)
+                self.win.geometry('%dx%d+%d+%d' % (w, h, x, y))
+        except Exception:
+            pass
+
+    def _show_install(self, text, needs_ollama=True):
+        self._install_needs_ollama = needs_ollama
+        self._set_status(text=text, fg='#EF6C00')
+        try:
+            self.install_btn.config(
+                text='一键安装本地模型（约 3 GB）' if needs_ollama
+                else '只下载模型 qwen2.5:3b（约 2 GB）')
+            self.install_row.pack(anchor='w', pady=(6, 0))
+        except Exception:
+            pass
+        self._ensure_height()
+
+    def _hide_install(self):
+        try:
+            self.install_row.pack_forget()
+        except Exception:
+            pass
+
+    def _show_local(self, info):
+        self._local_info = info
+        if not info.get('alive'):
+            self._show_install(
+                text='没检测到本机 Ollama。点下面「一键安装」会自动装好并下载 3B 小模型；'
+                     '自己装好也可以直接点「本地模型」。', needs_ollama=True)
+            return
+        models = info.get('models') or []
+        if not models:
+            self._show_install(
+                text='Ollama 已经装好了（v%s），只是还没下载模型。点下面按钮直接下，'
+                     '不会重复安装。' % (info.get('version') or '?'), needs_ollama=False)
+            return
+        self._hide_install()
+        self._set_status(text='检测到 Ollama（v%s），共 %d 个模型'
+                             % (info.get('version') or '?', len(models)), fg='#2E7D32')
+        self._dialog_models(models, info.get('host') or ollama.DEFAULT_HOST)
+
+    def _ask_dir(self):
+        from tkinter import filedialog
+        start = getattr(self, '_install_dir', '')
+        if not start or not os.path.isdir(start):
+            for candidate in ('D:\\', 'E:\\', 'C:\\'):
+                if os.path.isdir(candidate):
+                    start = candidate
+                    break
+        return filedialog.askdirectory(
+            parent=self.win, mustexist=False,
+            title='选择安装位置（Ollama 和模型都会放在这个目录下）',
+            initialdir=start)
+
+    def _cancel_install(self):
+        try:
+            ollama.abort_all()
+        except Exception:
+            pass
+        self._set_status(text='已经取消安装。装了一半的模型会留在磁盘上，'
+                             '下次点「一键安装」会接着用。', fg='#EF6C00')
+        try:
+            self.install_btn.config(state='normal', text='一键安装本地模型（约 3 GB）',
+                                    command=self._install_local)
+        except Exception:
+            pass
+
+    def _install_local(self):
+        """先选安装位置，再装 Ollama + 拉 qwen2.5:3b。"""
+        from tkinter import filedialog
+
+        needs_ollama = getattr(self, '_install_needs_ollama', True)
+        if not needs_ollama:
+            base = None
+        else:
+            base = self._ask_dir()
+            if not base:
+                return
+            self._install_dir = base
+
+        try:
+            self.install_btn.config(state='normal', text='取消安装',
+                                    command=self._cancel_install)
+        except Exception:
+            pass
+        self._set_status(text='准备安装…（第一次要下载 3 GB 左右，耐心等）', fg=HINT)
+
+        def progress(msg):
+            self._post(lambda: self._set_status(text=msg, fg=HINT))
+
+        def work():
+            try:
+                ok, info = ollama.install_to(base, progress=progress, model='qwen2.5:3b')
+            except Exception as exc:
+                ok, info = False, str(exc)[:80]
+
+            def done():
+                try:
+                    self.install_btn.config(state='normal', text='一键安装本地模型（约 3 GB）',
+                                            command=self._install_local)
+                except Exception:
+                    pass
+                if ok:
+                    try:
+                        where = ollama.paths_info()
+                        extra = '\n程序在 %s\n模型在 %s' % (where['cli'] or '已安装',
+                                                          where['models'])
+                    except Exception:
+                        extra = ''
+                    self._set_status(text='装好了：%s，正在切换…%s' % (info, extra),
+                                     fg='#2E7D32')
+                    self._hide_install()
+                    self._pick_local()
+                else:
+                    self._set_status(text='没装成：%s' % info, fg='#C62828')
+                    try:
+                        self.install_row.pack(anchor='w', pady=(6, 0))
+                    except Exception:
+                        pass
+                    self._ensure_height()
+
+            self._post(done)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _dialog_models(self, models, host):
+        win = tk.Toplevel(self.win)
+        win.title('选择本地模型')
+        win.configure(bg=BG)
+        win.transient(self.win)
+        win.attributes('-topmost', True)
+        tk.Label(win, text='本机已下载的模型（双击直接用）：', bg=BG, fg=TEXT,
+                 font=('Microsoft YaHei', 10)).pack(anchor='w', padx=14, pady=(12, 6))
+        box = tk.Listbox(win, height=min(10, max(3, len(models))), width=40,
+                         font=('Consolas', 10), relief='solid', bd=1,
+                         selectbackground=ACCENT, selectforeground='#FFFFFF')
+        for name in models:
+            box.insert('end', name)
+        box.selection_set(0)
+        box.pack(fill='both', expand=True, padx=14, pady=(0, 10))
+
+        def use(event=None):
+            sel = box.curselection()
+            if not sel:
+                return
+            model = box.get(sel[0])
+            win.destroy()
+            self._apply_local(model, host)
+
+        bar = tk.Frame(win, bg=BG)
+        bar.pack(fill='x', padx=14, pady=(0, 12))
+        tk.Button(bar, text='用这个模型', command=use, relief='flat', bg=ACCENT, fg='#fff',
+                  font=('Microsoft YaHei', 9, 'bold'), padx=16, pady=4).pack(side='right')
+        tk.Button(bar, text='取消', command=win.destroy, relief='flat', bg='#EFEFEF',
+                  fg=TEXT, font=('Microsoft YaHei', 9), padx=12, pady=4
+                  ).pack(side='right', padx=(0, 8))
+        box.bind('<Double-Button-1>', use)
+        win.bind('<Escape>', lambda e: win.destroy())
+        win.bind('<Return>', use)
+
+    def _apply_local(self, model, host):
+        cfg = ollama.apply_model({'provider': self._current_provider_key()}, model, host)
+        provider = cfg['provider']
+        preset = llm.PROVIDERS.get(provider, llm.PROVIDERS['deepseek'])
+        try:
+            idx = self.provider_labels.index(preset['label'])
+        except ValueError:
+            idx = 0
+        self.provider_var.set(self.provider_labels[idx])
+        self.base_var.set(cfg['base_url'])
+        self.model_var.set(cfg['model'])
+        self.key_var.set('')
+        self._set_status(text='已切到本地模型 %s，正在测试能不能通…' % model, fg=HINT)
+        self._test()
+
     def _on_provider(self, event=None):
         key = self._current_provider_key()
         preset = llm.PROVIDERS.get(key, {})
@@ -392,6 +635,7 @@ class SettingsWindow(object):
             'model': self.model_var.get().strip(),
             'api_key': self.key_var.get().strip(),
             'vision_model': self.vision_var.get().strip(),
+            'local_tuned': bool(self.local_tuned_var.get()),
         }
 
     # ---------------- 动作 ----------------

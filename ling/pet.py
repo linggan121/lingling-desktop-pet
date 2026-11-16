@@ -13,7 +13,8 @@ import tkinter as tk
 
 from PIL import Image
 
-from . import config, convert_engine as engine, dnd, frames, intent, llm, mood, outfits, paths, vision, wardrobe
+from . import (config, convert_engine as engine, dnd, frames, intent, llm, mood, ollama,
+               outfits, paths, vision, wardrobe)
 from . import memory as memory_mod
 from . import persona as persona_mod
 from .anim import Animator
@@ -812,6 +813,10 @@ class Pet(object):
             pass
 
     def _destroy(self):
+        try:
+            ollama.abort_all()      # 退出时别把安装/下载留在后台
+        except Exception:
+            pass
         try:
             self._stop_watch(silent=True)
         except Exception:

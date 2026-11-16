@@ -224,6 +224,9 @@ def friendly_error(status=None, detail=''):
 
 # ---------------- 同步调用（记忆提炼等后台小任务用） ----------------
 def complete(cfg, messages, temperature=0.6, timeout=20.0):
+    tune = local_params(cfg)
+    if tune:
+        temperature = tune['temperature']
     provider, base_url, model, api_key = resolve(cfg)
     if not ready(cfg):
         raise LLMError('还没有配置模型')
@@ -314,10 +317,24 @@ def complete_vision(cfg, model, prompt, image_b64, timeout=45.0):
 
 
 # ---------------- 流式调用（界面用，必须在子线程里跑） ----------------
+def local_params(cfg):
+    """本地小模型的默认参数：回复更短、温度更低，别跑题。"""
+    provider = (cfg or {}).get('provider')
+    if provider != 'ollama':
+        return None
+    if (cfg or {}).get('local_tuned') is False:
+        return None
+    return {'temperature': 0.75, 'max_tokens': 120}
+
+
 def stream(cfg, messages, on_chunk=None, on_done=None, on_error=None,
            temperature=0.9, connect_timeout=8.0, total_timeout=90.0, stop_flag=None,
            max_tokens=160):
     """阻塞式流式请求。回调都可能在工作线程里被调用，调用方自己负责切回主线程。"""
+    tune = local_params(cfg)
+    if tune:
+        temperature = tune['temperature']
+        max_tokens = tune['max_tokens']
     try:
         provider, base_url, model, api_key = resolve(cfg)
         if not ready(cfg):
